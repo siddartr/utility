@@ -1,0 +1,318 @@
+import sys
+import time
+import select
+import paramiko
+import argparse
+import os
+import re
+
+'''
+
+input params:
+vm ip String[] - vms where the container will be run
+jmx file path - jmx file to run
+jmx options - options to go along with jmx
+number of slaves - this would be the number of jmeter server containers that will be spawned across the swarm
+compose file will already be present as part of the service. will be copied over to the leader vm
+
+0. create docker swarm
+
+docker swarm init --listen-addr <master-ip>:2377 --advertise-addr <master-ip>:2377
+
+1. (on slave) join docker swarm
+
+docker swarm join --token <TOKEN>  <master-ip>:2377
+
+2. create overlay network for docker swarm
+
+docker network create -d overlay uber-net
+
+3. create jmeter service on the swarm
+
+docker stack deploy --compose-file=docker-compose.yml jmeter_test
+
+4. scale up the jmeter slave
+
+docker service scale jmeter_test_slave=15
+
+5. get ip addresses of all the containers in the swarm
+
+docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <container_name>
+
+6. copy over the jmx file into the container
+
+sudo docker exec -i jmeter_test_master.1.trlyhuknfngn2w0jivj6f0u8o  sh -c 'cat > /jmeter/apache-jmeter-3.2/bin/SimpleTest.jmx' < SimpleTest.jmx
+
+7. trigger jmeter
+
+'''
+
+jmx_dest_file_name = "jmeter_input_test_file.jmx"
+jmx_dest_path = "/root/"
+
+compose_dest_file_name = "docker-compose.yml"
+compose_dest_path = "/root/"
+
+jmeter_dest_path = "/root/"
+docker_create_swarm = "docker swarm init --listen-addr 10.127.72.8:2377 --advertise-addr 10.127.72.8:2377"
+docker_get_worker_token = "docker swarm join-token worker"
+docker_worker_leave_swarm = "docker swarm leave"
+docker_manager_leave_swarm = "docker swarm leave -f"
+docker_create_overlay_network = "docker network create -d overlay uber-net"
+docker_node_list = "docker node ls"
+docker_network_list = "docker network ls"
+docker_manager_create_service = "docker stack deploy --compose-file=" + compose_dest_path + compose_dest_file_name+ " jmeter_test"
+docker_service_scale = "docker service scale jmeter_test_slave="
+# export TOKEN=`docker $(docker-machine config --swarm apis-rpi-dev) inspect apis-rpi-dev/swarm-agent-master|grep 'token://'|sed -e 's/ *//'|head -1`
+docker_get_slave_container_id = "docker ps|grep jmeter_test_slave|cut -f1 -d' '"
+docker_get_container_ip = "docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'"
+docker_get_master_container_id = "docker ps|grep jmeter_test_master|cut -f1 -d' '"
+docker_exec_command = "docker exec -i "
+docker_jmx_file_location = "/jmeter/apache-jmeter-3.2/bin/" + jmx_dest_file_name
+docker_jmeter_log_file = "/jmeter/apache-jmeter-3.2/bin/op"
+docker_copy_file = " sh -c 'cat > " + docker_jmx_file_location + "' " + "< " + jmx_dest_path + jmx_dest_file_name
+docker_jmeter_cmd = "/jmeter/apache-jmeter-3.2/bin/./jmeter -l " + docker_jmeter_log_file + " -n -t " + docker_jmx_file_location + " -R"
+docker_copy = "docker cp "
+
+
+def main(argv):
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--vmIPList", help="comma separated ips of vms", required=False)
+    parser.add_argument("--slavecount", help="set the number of slaves", required=False)
+    parser.add_argument("--jmxfile", help="jmx file path", required=False)
+    parser.add_argument("--username", help="username to ssh into the vms", required=False, default='root')
+    parser.add_argument("--password", help="pwd to ssh into the vms", required=False, default='ca$hc0w')
+
+    args = parser.parse_args()
+
+    vmIPList = args.vmIPList.split(',')
+    slavecount = args.slavecount
+    jmxfile = args.jmxfile
+    username = args.username
+    password = args.password
+
+    print username
+    print password
+    print "copying necessary files to the remote vm...\n"
+    op = filecopy(vmIPList[0], jmxfile, jmx_dest_path, jmx_dest_file_name, username, password)
+    op = filecopy(vmIPList[0], compose_dest_file_name, compose_dest_path, compose_dest_file_name, username, password)
+
+    #create docker swarm on the first vm
+    print "Creating docker swarm..."
+    op = sshCommand(vmIPList[0], docker_create_swarm, username, password)
+    print op
+
+    time.sleep(2)
+
+    op = sshCommand(vmIPList[0], docker_get_worker_token, username, password)
+    print op
+
+    docker_worker_join_swarm = op.partition("command:")[2]
+    print "worker join cmd: " + docker_worker_join_swarm
+
+    # connect to a slave and start docker swarm
+    print "Worker joining swarm...\n"
+
+    #join workers except the master
+    for vmIP in vmIPList[1:]:
+        op = sshCommand(vmIP, docker_worker_join_swarm, username, password)
+        print op
+        time.sleep(2)
+
+    time.sleep(10)
+    print "create overlay network for the swarm...\n"
+    op = sshCommand(vmIPList[0], docker_create_overlay_network, username, password)
+    print op
+
+    time.sleep(5)
+
+    print "current network list: \n"
+    op = sshCommand(vmIPList[0], docker_network_list, username, password)
+    print op
+
+    time.sleep(10)
+    print("creating jmeter service...\n")
+    op = sshCommand(vmIPList[0], docker_manager_create_service, username, password)
+    print op
+    print("created jmeter service.")
+    #
+    time.sleep(30)
+    #
+    print "scaling the number of slaves...\n"
+    op = sshCommand(vmIPList[0], docker_service_scale + slavecount, username, password)
+    print op
+    time.sleep(30)
+
+
+    # DO NOT RE_ADD
+    # op = sshCommand(vmIPList[0], docker_get_slave_container_id)
+    # container_id_list = op.replace('\n', ' ')
+    # container_ip_list = []
+    #
+    # op = sshCommand(vmIPList[0], docker_get_container_ip + ' ' + container_id_list)
+    # container_ip_list = op
+    # print "VM 0 slave container ips: \n" + container_ip_list
+    # time.sleep(5)
+    # # print container_list
+    # op = sshCommand(vmIPList[1], docker_get_slave_container_id)
+    # container_id_list = op.replace('\n', ' ')
+    # #
+    # op = sshCommand(vmIPList[1], docker_get_container_ip + ' ' + container_id_list)
+    # print "VM 1 container ips: \n" + op
+    # container_ip_list = container_ip_list + op
+    # time.sleep(5)
+    # print container_ip_list
+    # END OF DO NOT RE_ADD
+
+    #
+    op = sshCommand(vmIPList[0], docker_get_master_container_id, username, password)
+    master_container_id = op.replace('\n', '')
+    print master_container_id
+    time.sleep(2)
+
+    # #cmd = "sudo docker exec -i " + master_container_id + " sh -c 'cat > /jmeter/apache-jmeter-3.2/bin/SimpleTest.jmx' < jmetercompose/SimpleTest.jmx"
+    #
+    # #print cmd
+    print "copying jmx file to the master container...\n"
+    copy_file_cmd = docker_exec_command + master_container_id + docker_copy_file
+    print copy_file_cmd
+    op = sshCommand(vmIPList[0], copy_file_cmd, username, password)
+
+    print op
+
+    container_ip_list = ''
+
+    for vmIP in vmIPList:
+        op = sshCommand(vmIP, docker_get_slave_container_id, username, password)
+        container_id_list = op.replace('\n', ' ')
+        op = sshCommand(vmIP, docker_get_container_ip + ' ' + container_id_list, username, password)
+        container_ip_list = container_ip_list + op.replace('\n', ',')
+        time.sleep(5)
+    print "slave container ip: \n"
+    print container_ip_list
+
+    #cmd = "docker exec -i 52e2beb1b395 /jmeter/apache-jmeter-3.2/bin/./jmeter -l /jmeter/apache-jmeter-3.2/bin/to5 -n -t /jmeter/apache-jmeter-3.2/bin/SimpleTest.jmx -R"
+    cmd = docker_exec_command + master_container_id + " " + docker_jmeter_cmd + container_ip_list
+    print "executing jmeter command: " + cmd
+
+    op = sshCommand(vmIPList[0], cmd, username, password)
+    print op
+
+    print "copying jmeter log file back to master vm...\n"
+    cmd = docker_copy + master_container_id + ":" + docker_jmeter_log_file + " " + jmeter_dest_path
+    print cmd
+    op = sshCommand(vmIPList[0], cmd, username, password)
+    print op
+
+    print "jmeter task completed...\n"
+
+    for vmIP in vmIPList[1:]:
+        op = sshCommand(vmIPList[1], docker_worker_leave_swarm, username, password)
+        print op
+        print("worker leaving swarm")
+        time.sleep(20)
+        op = sshCommand(vmIPList[0], docker_node_list, username, password)
+        print op
+
+    op = sshCommand(vmIPList[0], docker_manager_leave_swarm, username, password)
+    print op
+    time.sleep(20)
+    print("manager leaving swarm")
+    op = sshCommand(vmIPList[0], docker_node_list, username, password)
+    print op
+
+#
+# Try to connect to the host.
+# Retry a few times if it fails.
+#
+
+def sshCommand(host, commands, username, password):
+    i = 5
+    output = ''
+    while True:
+        print "Trying to connect to %s (%i/30)" % (host, i)
+
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(host, username=username, password=password)
+            print "Connected to %s" % host
+            break
+        except paramiko.AuthenticationException:
+            print "Authentication failed when connecting to %s" % host
+            sys.exit(1)
+        except:
+            print "Could not SSH to %s, waiting for it to start" % host
+            i += 1
+            time.sleep(2)
+
+        # If we could not connect within time limit
+        if i == 30:
+            print "Could not connect to %s. Giving up" % host
+            sys.exit(1)
+
+    # Send the command (non-blocking)
+
+    stdin, stdout, stderr = ssh.exec_command(commands)
+
+    # Wait for the command to terminate
+    while not stdout.channel.exit_status_ready():
+        # Only print data if there is data to read in the channel
+        if stdout.channel.recv_ready():
+            rl, wl, xl = select.select([stdout.channel], [], [], 0.0)
+            if len(rl) > 0:
+                # Print data from stdout
+                # print stdout.channel.recv(1024)
+                output = output + stdout.channel.recv(1024)
+
+    #
+    # Disconnect from the host
+    #
+
+    print "Command done, closing SSH connection"
+    ssh.close()
+    return output
+
+def filecopy(host, sourcepath, destpath, destfilename, username, password):
+    i = 5
+    output = ''
+    while True:
+        print "Trying to connect to %s (%i/30)" % (host, i)
+
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(host, username=username, password=password)
+            print "Connected to %s" % host
+            break
+        except paramiko.AuthenticationException:
+            print "Authentication failed when connecting to %s" % host
+            sys.exit(1)
+        except:
+            print "Could not SSH to %s, waiting for it to start" % host
+            i += 1
+            time.sleep(2)
+
+        # If we could not connect within time limit
+        if i == 30:
+            print "Could not connect to %s. Giving up" % host
+            sys.exit(1)
+
+    # Send the command (non-blocking)
+    print sourcepath
+    sftp = ssh.open_sftp()
+    sftp.put(sourcepath, os.path.join(destpath, destfilename))
+    sftp.close()
+    #
+    # Disconnect from the host
+    #
+
+    print "File copy done, closing SSH connection"
+    ssh.close()
+    return output
+
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

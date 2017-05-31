@@ -1,0 +1,22 @@
+version: '3.1'
+
+services:
+
+  master:
+    image: spadmanabhanvmw/jmeter_client:dockerfile
+    container_name: jmetercompose_master
+    tty: true
+    hostname: master
+    deploy:
+       placement:
+        constraints: [node.role == manager]
+    networks:
+      - uber-net
+  slave:
+    image: spadmanabhanvmw/jmeter_server:dockerfile
+    tty: true
+    networks:
+      - uber-net
+  
+networks:
+  uber-net:
