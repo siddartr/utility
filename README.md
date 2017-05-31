@@ -13,6 +13,7 @@ Input params:
 
 compose file will already be present as part of the service. Will be copied over to the leader vm
 
+```
 $ python main_scripts --help
 usage: main_scripts [-h] [--vmIPList VMIPLIST] [--slavecount SLAVECOUNT]
                     [--jmxfile JMXFILE] [--username USERNAME]
@@ -25,11 +26,14 @@ optional arguments:
                         set the number of slaves
   --jmxfile JMXFILE     jmx file path
   --username USERNAME   username to ssh into the vms
-  --password PASSWORD   pwd to ssh into the vms
+  --password PASSWORD   pwd to ssh into the vms 
+  ```
 
 ### Sample Usage:
 
+```
 $ python main_scripts --vmIPList 10.127.72.8,10.127.72.9 --jmxfile SimpleTest.jmx --slavecount 20 --username 'root' --password 'ca$hc0w'
+```
 
 0. create docker swarm
 
