@@ -1,21 +1,21 @@
 Distributed Load Testing
+========================
 
-Using Jmeter
-
+Jmeter and Docker Swarm
+------------------------
 
 Input params:
-vm ip String[] - vms where the containers will be run.
-jmx file path - jmx file to run
-username - username to ssh into the vms
-password - pwd to ssh into the vms
-number of slaves - this would be the number of jmeter server containers that will be spawned across the swarm
+1. vm ip String[] - vms where the containers will be run
+2. jmx file path - jmx file to run
+3. number of slaves - this would be the number of jmeter server containers that will be spawned across the swarm
+4. username - username to ssh into the vms
+5. password - pwd to ssh into the vms
+
 compose file will already be present as part of the service. Will be copied over to the leader vm
 
-Usage:
+Sample Usage:
 
 $ python main_scripts --vmIPList 10.127.72.8,10.127.72.9 --jmxfile SimpleTest.jmx --slavecount 20 --username 'root' --password 'ca$hc0w'
-
-
 
 0. create docker swarm
 
@@ -29,4 +29,4 @@ $ python main_scripts --vmIPList 10.127.72.8,10.127.72.9 --jmxfile SimpleTest.jm
 
 5. get ip addresses of all the containers in the swarm
 
-6. trigger jmeter.
+6. trigger jmeter on leader.
