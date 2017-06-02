@@ -13,7 +13,9 @@ Input params:
 
 compose file will already be present as part of the service. Will be copied over to the leader vm
 
-Python module requirements: paramiko, argparse
+python module requirements: paramiko, argparse
+
+The vms must have docker, docker-compose installed already.
 
 ```
 $ python main_scripts --help
