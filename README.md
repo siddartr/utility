@@ -12,6 +12,7 @@ Input params:
 5. password - pwd to ssh into the vms
 
 compose file will already be present as part of the service. Will be copied over to the leader vm
+Python module requirements: paramiko, argparse
 
 ```
 $ python main_scripts --help
